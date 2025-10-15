@@ -1,5 +1,6 @@
 import time
 import os
+from datetime import datetime
 import numpy as np
 from cellpose import io, utils, models, dynamics
 from cellpose.transforms import normalize_img, random_rotate_and_resize
@@ -356,7 +357,14 @@ def train_seg(net, train_data=None, train_labels=None, train_files=None,
         tuple: A tuple containing the path to the saved model weights, training losses, and test losses.
        
     """
-    writer = SummaryWriter()
+    current_time = datetime.now().strftime("%b%d_%H-%M-%S")
+    
+    if save_path is None:
+        save_path = Path("runs") / current_time
+    else:
+        save_path = Path(save_path) / current_time
+
+    writer = SummaryWriter(save_path)
 
     def test_seg(test_data, test_files, nimg_test, nimg_test_per_epoch):
         lavgt = 0.
@@ -491,7 +499,6 @@ def train_seg(net, train_data=None, train_labels=None, train_files=None,
 
     t0 = time.time()
     model_name = f"cellpose_{t0}" if model_name is None else model_name
-    save_path = Path(writer.get_logdir())
     filename = save_path / "models" / model_name
     (save_path / "models").mkdir(exist_ok=True)
 
