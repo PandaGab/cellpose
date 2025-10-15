@@ -8,6 +8,8 @@ import torch
 from torch import nn
 from tqdm import trange
 
+from torch.utils.tensorboard import SummaryWriter
+
 import logging
 
 train_logger = logging.getLogger(__name__)
@@ -354,6 +356,67 @@ def train_seg(net, train_data=None, train_labels=None, train_files=None,
         tuple: A tuple containing the path to the saved model weights, training losses, and test losses.
        
     """
+    writer = SummaryWriter()
+
+    def test_seg(test_data, test_files, nimg_test, nimg_test_per_epoch):
+        lavgt = 0.
+        if test_data is not None or test_files is not None:
+            np.random.seed(42)
+            if nimg_test != nimg_test_per_epoch:
+                rperm = np.random.choice(np.arange(0, nimg_test),
+                                            size=(nimg_test_per_epoch,), p=test_probs)
+            else:
+                rperm = np.random.permutation(np.arange(0, nimg_test))
+            for ibatch in range(0, len(rperm), batch_size):
+                with torch.no_grad():
+                    net.eval()
+                    inds = rperm[ibatch:ibatch + batch_size]
+                    imgs, lbls = _get_batch(inds, data=test_data,
+                                            labels=test_labels, files=test_files,
+                                            labels_files=test_labels_files,
+                                            **kwargs)
+                    diams = np.array([diam_test[i] for i in inds])
+                    rsc = diams / net.diam_mean.item() if rescale else np.ones(
+                        len(diams), "float32")
+                    imgi, lbl = random_rotate_and_resize(
+                        imgs, Y=lbls, rescale=rsc, scale_range=scale_range,
+                        xy=(bsize, bsize))[:2]
+                    X = torch.from_numpy(imgi).to(device)
+                    lbl = torch.from_numpy(lbl).to(device)
+
+                    if X.dtype != net.dtype:
+                        X = X.to(net.dtype)
+                        lbl = lbl.to(net.dtype)
+                    
+                    y = net(X)[0]
+                    loss = _loss_fn_seg(lbl, y, device)
+                    if y.shape[1] > 3:
+                        loss3 = _loss_fn_class(lbl, y, class_weights=class_weights)
+                        loss += loss3            
+                    test_loss = loss.item()
+                    test_loss *= len(imgi)
+                    lavgt += test_loss
+            lavgt /= len(rperm)
+
+            writer.add_scalar("Loss/test", test_losses[iepoch], iepoch)
+
+            return lavgt
+
+    writer.add_hparams(
+        hparam_dict={
+            "batch_size": batch_size,
+            "learning_rate": learning_rate, 
+            "SGD": SGD,
+            "n_epochs": n_epochs, 
+            "weight_decay": weight_decay, 
+            "normalize": normalize,
+            "rescale": rescale,
+            "scale_range": scale_range,
+            "bsize": bsize,
+        },
+        metric_dict={}
+    )
+
     if SGD:
         train_logger.warning("SGD is deprecated, using AdamW instead")
 
@@ -428,7 +491,7 @@ def train_seg(net, train_data=None, train_labels=None, train_files=None,
 
     t0 = time.time()
     model_name = f"cellpose_{t0}" if model_name is None else model_name
-    save_path = Path.cwd() if save_path is None else Path(save_path)
+    save_path = Path(writer.get_logdir())
     filename = save_path / "models" / model_name
     (save_path / "models").mkdir(exist_ok=True)
 
@@ -487,46 +550,12 @@ def train_seg(net, train_data=None, train_labels=None, train_files=None,
             train_losses[iepoch] += train_loss
         train_losses[iepoch] /= nimg_per_epoch
 
-        if iepoch == 5 or iepoch % 10 == 0:
-            lavgt = 0.
-            if test_data is not None or test_files is not None:
-                np.random.seed(42)
-                if nimg_test != nimg_test_per_epoch:
-                    rperm = np.random.choice(np.arange(0, nimg_test),
-                                             size=(nimg_test_per_epoch,), p=test_probs)
-                else:
-                    rperm = np.random.permutation(np.arange(0, nimg_test))
-                for ibatch in range(0, len(rperm), batch_size):
-                    with torch.no_grad():
-                        net.eval()
-                        inds = rperm[ibatch:ibatch + batch_size]
-                        imgs, lbls = _get_batch(inds, data=test_data,
-                                                labels=test_labels, files=test_files,
-                                                labels_files=test_labels_files,
-                                                **kwargs)
-                        diams = np.array([diam_test[i] for i in inds])
-                        rsc = diams / net.diam_mean.item() if rescale else np.ones(
-                            len(diams), "float32")
-                        imgi, lbl = random_rotate_and_resize(
-                            imgs, Y=lbls, rescale=rsc, scale_range=scale_range,
-                            xy=(bsize, bsize))[:2]
-                        X = torch.from_numpy(imgi).to(device)
-                        lbl = torch.from_numpy(lbl).to(device)
+        writer.add_scalar("Loss/train", train_losses[iepoch], iepoch)
+        writer.add_scalar("lr", LR[iepoch], iepoch)
 
-                        if X.dtype != net.dtype:
-                            X = X.to(net.dtype)
-                            lbl = lbl.to(net.dtype)
-                        
-                        y = net(X)[0]
-                        loss = _loss_fn_seg(lbl, y, device)
-                        if y.shape[1] > 3:
-                            loss3 = _loss_fn_class(lbl, y, class_weights=class_weights)
-                            loss += loss3            
-                        test_loss = loss.item()
-                        test_loss *= len(imgi)
-                        lavgt += test_loss
-                lavgt /= len(rperm)
-                test_losses[iepoch] = lavgt
+        if iepoch == 5 or iepoch % 10 == 0:
+            lavgt = test_seg(test_data, test_files, nimg_test, nimg_test_per_epoch)
+
             lavg /= nsum
             train_logger.info(
                 f"{iepoch}, train_loss={lavg:.4f}, test_loss={lavgt:.4f}, LR={LR[iepoch]:.6f}, time {time.time()-t0:.2f}s"
@@ -546,5 +575,7 @@ def train_seg(net, train_data=None, train_labels=None, train_files=None,
     if original_net_dtype is not None:
         net.dtype = original_net_dtype
         net.to(original_net_dtype)
+
+    writer.close()
 
     return filename, train_losses, test_losses

@@ -14,7 +14,8 @@ install_deps = [
     'imagecodecs',
     'roifile',
     'fill-voids',
-    'segment_anything'
+    'segment_anything',
+    'tensorboard'
 ]
 
 image_deps = ['nd2', 'pynrrd']
