@@ -406,8 +406,6 @@ def train_seg(net, train_data=None, train_labels=None, train_files=None,
                     lavgt += test_loss
             lavgt /= len(rperm)
 
-            writer.add_scalar("Loss/test", test_losses[iepoch], iepoch)
-
             return lavgt
 
     writer.add_hparams(
@@ -562,6 +560,8 @@ def train_seg(net, train_data=None, train_labels=None, train_files=None,
 
         if iepoch == 5 or iepoch % 10 == 0:
             lavgt = test_seg(test_data, test_files, nimg_test, nimg_test_per_epoch)
+
+            writer.add_scalar("Loss/test", lavgt, iepoch)
 
             lavg /= nsum
             train_logger.info(
